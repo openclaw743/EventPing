@@ -8,11 +8,8 @@ terraform {
     }
   }
 
-  backend "azurerm" {
-    # Configure via CLI flags or environment variables:
-    # TF_VAR_resource_group_name, ARM_* env vars
-    # Or provide a backend config file: terraform init -backend-config=backend.hcl
-  }
+  # Using local backend for initial provisioning
+  # TODO: migrate to azurerm backend after storage account is created
 }
 
 provider "azurerm" {

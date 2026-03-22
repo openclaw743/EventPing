@@ -41,7 +41,7 @@ router.get('/', async (req: Request, res: Response) => {
     return;
   }
   const { page, limit, status } = queryResult.data;
-  const result = await listRsvps(db, req.params.slug, { page, limit }, status);
+  const result = await listRsvps(db, String(req.params.slug), { page, limit }, status);
   if (!result) {
     res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Event not found.' } });
     return;
@@ -55,7 +55,7 @@ router.post('/', rsvpRateLimit, async (req: Request, res: Response) => {
     res.status(400).json({ error: { code: 'VALIDATION_ERROR', message: toErrorMessage(bodyResult.error) } });
     return;
   }
-  const result = await createRsvp(db, req.params.slug, bodyResult.data);
+  const result = await createRsvp(db, String(req.params.slug), bodyResult.data);
   if ('error' in result) {
     if (result.error === 'EVENT_NOT_FOUND') {
       res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Event not found.' } });
@@ -64,7 +64,7 @@ router.post('/', rsvpRateLimit, async (req: Request, res: Response) => {
     res.status(409).json({ error: { code: 'DUPLICATE_RSVP', message: 'An RSVP with this email already exists for this event.' } });
     return;
   }
-  res.setHeader('Location', `/api/events/${req.params.slug}/rsvps/${result.rsvp.id}`);
+  res.setHeader('Location', `/api/events/${String(req.params.slug)}/rsvps/${result.rsvp.id}`);
   res.status(201).json({ data: formatRsvp(result.rsvp) });
 });
 
@@ -74,7 +74,7 @@ router.put('/:id', async (req: Request, res: Response) => {
     res.status(400).json({ error: { code: 'VALIDATION_ERROR', message: toErrorMessage(bodyResult.error) } });
     return;
   }
-  const result = await updateRsvp(db, req.params.slug, req.params.id, bodyResult.data);
+  const result = await updateRsvp(db, String(req.params.slug), String(req.params.id), bodyResult.data);
   if ('error' in result) {
     res.status(404).json({ error: { code: 'NOT_FOUND', message: result.error === 'EVENT_NOT_FOUND' ? 'Event not found.' : 'RSVP not found.' } });
     return;

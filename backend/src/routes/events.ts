@@ -95,7 +95,7 @@ router.post('/', requireAuth, async (req, res, next) => {
  */
 router.get('/:slug', async (req, res, next) => {
   try {
-    const event = await getEventBySlug(req.params.slug);
+    const event = await getEventBySlug(String(req.params.slug));
     if (!event) {
       return res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Resource not found.' } });
     }
@@ -116,7 +116,7 @@ router.put('/:slug', requireAuth, async (req, res, next) => {
       return res.status(400).json(validationError(parsed.error.issues[0]?.message ?? 'Validation error.'));
     }
 
-    const result = await updateEvent(req.params.slug, req.user!.id, parsed.data);
+    const result = await updateEvent(String(req.params.slug), req.user!.id, parsed.data);
     if (result === null) {
       return res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Resource not found.' } });
     }
@@ -135,7 +135,7 @@ router.put('/:slug', requireAuth, async (req, res, next) => {
  */
 router.delete('/:slug', requireAuth, async (req, res, next) => {
   try {
-    const result = await deleteEvent(req.params.slug, req.user!.id);
+    const result = await deleteEvent(String(req.params.slug), req.user!.id);
     if (result === 'not_found') {
       return res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Resource not found.' } });
     }
