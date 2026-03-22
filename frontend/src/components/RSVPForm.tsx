@@ -69,6 +69,7 @@ export function RSVPForm({ slug, onSuccess }: RSVPFormProps) {
               key={btn.value}
               type="button"
               onClick={() => setStatus(btn.value)}
+              aria-pressed={status === btn.value}
               className={`flex-1 py-2 rounded-lg border text-sm font-medium transition-colors ${status === btn.value ? btn.active + ' border-transparent' : 'border-slate-300 text-slate-600 hover:bg-slate-50'}`}
             >
               {btn.label}

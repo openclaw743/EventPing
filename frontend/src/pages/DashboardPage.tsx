@@ -9,7 +9,10 @@ import { api } from '../lib/api'
 export default function DashboardPage() {
   const { data, isLoading, error } = useQuery({
     queryKey: ['my-events'],
-    queryFn: () => api.get<Event[]>('/api/events'),
+    queryFn: async () => {
+      const res = await api.get<{ data: Event[]; pagination: unknown }>('/api/events');
+      return res.data;
+    },
   })
 
   const [events, setEvents] = useState<Event[] | null>(null)
