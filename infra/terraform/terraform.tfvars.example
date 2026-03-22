@@ -1,0 +1,26 @@
+# terraform.tfvars.example
+# Copy to terraform.tfvars and fill in values before applying.
+# NEVER commit terraform.tfvars to version control.
+
+subscription_id     = "427d4176-864a-44c1-8470-468709ff9252"
+resource_group_name = "rg-Sandbox"
+location            = "swedencentral"
+frontend_location   = "westeurope"
+app_name            = "eventping"
+environment         = "staging"
+
+acr_sku             = "Basic"
+
+postgres_sku_name          = "B_Standard_B1ms"
+postgres_storage_mb        = 32768
+postgres_version           = "15"
+postgres_admin_login       = "eventpingadmin"
+postgres_admin_password    = "CHANGE_ME_strong_password_here!"
+
+container_app_cpu    = 0.5
+container_app_memory = "1Gi"
+backend_image_tag    = "latest"
+
+jwt_secret           = "CHANGE_ME_min_32_chars_jwt_secret_here"
+google_client_id     = "your-google-client-id.apps.googleusercontent.com"
+google_client_secret = "your-google-client-secret"
