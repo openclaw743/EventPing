@@ -1,0 +1,895 @@
+openapi: 3.0.3
+info:
+  title: EventPing API
+  description: |
+    REST API for EventPing — event creation and RSVP management.
+
+    ## Authentication
+    Uses Google OAuth 2.0. On successful login the server issues a JWT stored in an
+    `httpOnly`, `Secure`, `SameSite=Lax` cookie named `eventping_session`.
+    Endpoints marked **auth required** expect that cookie to be present.
+
+    ## Rate Limiting
+    Rate-limit headers are returned on every response:
+    - `X-RateLimit-Limit` — max requests allowed in the window
+    - `X-RateLimit-Remaining` — requests remaining in the current window
+    - `X-RateLimit-Reset` — Unix timestamp when the window resets
+    - `Retry-After` — seconds to wait (only present on 429 responses)
+
+    ## Pagination
+    List endpoints use **offset-based pagination** via `page` (1-indexed) and `limit`
+    query parameters. Responses include a `pagination` envelope.
+
+    ## Error Format
+    All errors follow: `{ "error": { "code": string, "message": string } }`
+  version: 1.0.0
+  contact:
+    name: EventPing TechLead
+
+servers:
+  - url: /api
+    description: Same-origin API (dev and production)
+
+tags:
+  - name: auth
+    description: Authentication via Google OAuth 2.0
+  - name: events
+    description: Event management (write ops require authentication)
+  - name: rsvps
+    description: RSVP management (all public — no auth required)
+
+# ---------------------------------------------------------------------------
+# Reusable components
+# ---------------------------------------------------------------------------
+components:
+
+  # ---- Security schemes ---------------------------------------------------
+  securitySchemes:
+    cookieAuth:
+      type: apiKey
+      in: cookie
+      name: eventping_session
+      description: JWT stored in an httpOnly cookie set by POST /api/auth/google flow.
+
+  # ---- Headers -------------------------------------------------------------
+  headers:
+    X-RateLimit-Limit:
+      schema:
+        type: integer
+      description: Max requests allowed in the current window.
+    X-RateLimit-Remaining:
+      schema:
+        type: integer
+      description: Requests remaining in the current window.
+    X-RateLimit-Reset:
+      schema:
+        type: integer
+        format: int64
+      description: Unix timestamp (seconds) when the window resets.
+
+  # ---- Parameters ----------------------------------------------------------
+  parameters:
+    SlugParam:
+      name: slug
+      in: path
+      required: true
+      schema:
+        type: string
+        pattern: '^[a-z0-9]+(?:-[a-z0-9]+)*$'
+        example: my-birthday-party
+    RsvpIdParam:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    PageParam:
+      name: page
+      in: query
+      required: false
+      schema:
+        type: integer
+        minimum: 1
+        default: 1
+      description: 1-indexed page number.
+    LimitParam:
+      name: limit
+      in: query
+      required: false
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 20
+      description: Number of items per page.
+
+  # ---- Schemas -------------------------------------------------------------
+  schemas:
+
+    # -- Shared ---------------------------------------------------------------
+    Pagination:
+      type: object
+      required: [page, limit, total, totalPages]
+      properties:
+        page:
+          type: integer
+          example: 1
+        limit:
+          type: integer
+          example: 20
+        total:
+          type: integer
+          example: 42
+        totalPages:
+          type: integer
+          example: 3
+
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              example: NOT_FOUND
+            message:
+              type: string
+              example: Event not found.
+
+    # -- Auth -----------------------------------------------------------------
+    User:
+      type: object
+      required: [id, email, name, avatarUrl, createdAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        email:
+          type: string
+          format: email
+          example: alice@example.com
+        name:
+          type: string
+          example: Alice Smith
+        avatarUrl:
+          type: string
+          format: uri
+          nullable: true
+          example: https://lh3.googleusercontent.com/a/abc123
+        createdAt:
+          type: string
+          format: date-time
+
+    # -- Events ---------------------------------------------------------------
+    EventBase:
+      type: object
+      required: [title, date, time]
+      properties:
+        title:
+          type: string
+          minLength: 1
+          maxLength: 200
+          example: Alice's Birthday Party
+        date:
+          type: string
+          format: date
+          example: '2026-06-15'
+        time:
+          type: string
+          pattern: '^([01]\d|2[0-3]):[0-5]\d$'
+          example: '18:30'
+        description:
+          type: string
+          maxLength: 5000
+          nullable: true
+          example: Come celebrate with us!
+
+    EventResponse:
+      allOf:
+        - $ref: '#/components/schemas/EventBase'
+        - type: object
+          required: [id, slug, creatorId, createdAt, updatedAt]
+          properties:
+            id:
+              type: string
+              format: uuid
+            slug:
+              type: string
+              example: alices-birthday-party
+            creatorId:
+              type: string
+              format: uuid
+            rsvpCount:
+              type: integer
+              description: Cached count of RSVPs (all statuses).
+              example: 12
+            createdAt:
+              type: string
+              format: date-time
+            updatedAt:
+              type: string
+              format: date-time
+
+    CreateEventRequest:
+      allOf:
+        - $ref: '#/components/schemas/EventBase'
+
+    UpdateEventRequest:
+      type: object
+      minProperties: 1
+      properties:
+        title:
+          type: string
+          minLength: 1
+          maxLength: 200
+        date:
+          type: string
+          format: date
+        time:
+          type: string
+          pattern: '^([01]\d|2[0-3]):[0-5]\d$'
+        description:
+          type: string
+          maxLength: 5000
+          nullable: true
+
+    EventListResponse:
+      type: object
+      required: [data, pagination]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/EventResponse'
+        pagination:
+          $ref: '#/components/schemas/Pagination'
+
+    # -- RSVPs ----------------------------------------------------------------
+    RsvpStatus:
+      type: string
+      enum: [yes, no, tentative]
+
+    RsvpResponse:
+      type: object
+      required: [id, eventId, name, status, createdAt, updatedAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        eventId:
+          type: string
+          format: uuid
+        name:
+          type: string
+          example: Bob Jones
+        email:
+          type: string
+          format: email
+          nullable: true
+          example: bob@example.com
+        status:
+          $ref: '#/components/schemas/RsvpStatus'
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    CreateRsvpRequest:
+      type: object
+      required: [name, status]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 100
+          example: Bob Jones
+        email:
+          type: string
+          format: email
+          nullable: true
+          example: bob@example.com
+        status:
+          $ref: '#/components/schemas/RsvpStatus'
+
+    UpdateRsvpRequest:
+      type: object
+      minProperties: 1
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 100
+        email:
+          type: string
+          format: email
+          nullable: true
+        status:
+          $ref: '#/components/schemas/RsvpStatus'
+
+    RsvpListResponse:
+      type: object
+      required: [data, pagination]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/RsvpResponse'
+        pagination:
+          $ref: '#/components/schemas/Pagination'
+
+  # ---- Responses -----------------------------------------------------------
+  responses:
+    400:
+      description: Validation error.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error:
+              code: VALIDATION_ERROR
+              message: "'title' is required."
+    401:
+      description: Not authenticated.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error:
+              code: UNAUTHORIZED
+              message: Authentication required.
+    403:
+      description: Forbidden — authenticated but not authorized.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error:
+              code: FORBIDDEN
+              message: You do not have permission to perform this action.
+    404:
+      description: Resource not found.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error:
+              code: NOT_FOUND
+              message: Resource not found.
+    500:
+      description: Internal server error.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error:
+              code: INTERNAL_ERROR
+              message: An unexpected error occurred.
+
+# ---------------------------------------------------------------------------
+# Paths
+# ---------------------------------------------------------------------------
+paths:
+
+  # ==========================================================================
+  # Auth
+  # ==========================================================================
+
+  /auth/google:
+    post:
+      tags: [auth]
+      operationId: initiateGoogleOAuth
+      summary: Initiate Google OAuth flow
+      description: |
+        Begins the Google OAuth 2.0 authorization code flow. The server builds a
+        Google authorization URL (with `state` and `code_challenge` for PKCE) and
+        redirects the browser to it. This endpoint is typically invoked by a
+        link/button — not an XHR — so the browser follows the redirect automatically.
+      security: []
+      responses:
+        '302':
+          description: Redirect to Google authorization endpoint.
+          headers:
+            Location:
+              schema:
+                type: string
+                format: uri
+              description: Google OAuth authorization URL.
+            X-RateLimit-Limit:
+              $ref: '#/components/headers/X-RateLimit-Limit'
+            X-RateLimit-Remaining:
+              $ref: '#/components/headers/X-RateLimit-Remaining'
+            X-RateLimit-Reset:
+              $ref: '#/components/headers/X-RateLimit-Reset'
+        '500':
+          $ref: '#/components/responses/500'
+
+  /auth/callback:
+    get:
+      tags: [auth]
+      operationId: googleOAuthCallback
+      summary: Google OAuth callback
+      description: |
+        Receives the authorization code from Google. Exchanges it for tokens,
+        upserts the user in the database, issues a JWT stored in an `httpOnly`
+        `Secure` `SameSite=Lax` cookie named `eventping_session`, then redirects
+        the browser to the frontend dashboard.
+      security: []
+      parameters:
+        - name: code
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Authorization code from Google.
+        - name: state
+          in: query
+          required: true
+          schema:
+            type: string
+          description: CSRF state token (must match the value set during initiation).
+        - name: error
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Error code from Google if the user denied access.
+      responses:
+        '302':
+          description: |
+            Redirect to frontend dashboard on success, or to frontend error page
+            on failure. JWT cookie is set on success.
+          headers:
+            Location:
+              schema:
+                type: string
+                format: uri
+            Set-Cookie:
+              schema:
+                type: string
+              description: |
+                `eventping_session=<JWT>; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=604800`
+            X-RateLimit-Limit:
+              $ref: '#/components/headers/X-RateLimit-Limit'
+            X-RateLimit-Remaining:
+              $ref: '#/components/headers/X-RateLimit-Remaining'
+            X-RateLimit-Reset:
+              $ref: '#/components/headers/X-RateLimit-Reset'
+        '400':
+          $ref: '#/components/responses/400'
+        '500':
+          $ref: '#/components/responses/500'
+
+  /auth/me:
+    get:
+      tags: [auth]
+      operationId: getCurrentUser
+      summary: Get current authenticated user
+      description: Returns the profile of the currently authenticated user.
+      security:
+        - cookieAuth: []
+      responses:
+        '200':
+          description: Authenticated user profile.
+          headers:
+            X-RateLimit-Limit:
+              $ref: '#/components/headers/X-RateLimit-Limit'
+            X-RateLimit-Remaining:
+              $ref: '#/components/headers/X-RateLimit-Remaining'
+            X-RateLimit-Reset:
+              $ref: '#/components/headers/X-RateLimit-Reset'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    $ref: '#/components/schemas/User'
+        '401':
+          $ref: '#/components/responses/401'
+        '500':
+          $ref: '#/components/responses/500'
+
+  /auth/logout:
+    post:
+      tags: [auth]
+      operationId: logout
+      summary: Log out
+      description: |
+        Clears the `eventping_session` cookie by setting it to an expired value.
+        No request body required. Safe to call even when not authenticated.
+      security: []
+      responses:
+        '204':
+          description: Logged out. Cookie cleared.
+          headers:
+            Set-Cookie:
+              schema:
+                type: string
+              description: Expired `eventping_session` cookie to clear it from the browser.
+            X-RateLimit-Limit:
+              $ref: '#/components/headers/X-RateLimit-Limit'
+            X-RateLimit-Remaining:
+              $ref: '#/components/headers/X-RateLimit-Remaining'
+            X-RateLimit-Reset:
+              $ref: '#/components/headers/X-RateLimit-Reset'
+        '500':
+          $ref: '#/components/responses/500'
+
+  # ==========================================================================
+  # Events
+  # ==========================================================================
+
+  /events:
+    get:
+      tags: [events]
+      operationId: listEvents
+      summary: List authenticated user's events
+      description: Returns a paginated list of events created by the authenticated user.
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: '#/components/parameters/PageParam'
+        - $ref: '#/components/parameters/LimitParam'
+      responses:
+        '200':
+          description: Paginated list of the creator's events.
+          headers:
+            X-RateLimit-Limit:
+              $ref: '#/components/headers/X-RateLimit-Limit'
+            X-RateLimit-Remaining:
+              $ref: '#/components/headers/X-RateLimit-Remaining'
+            X-RateLimit-Reset:
+              $ref: '#/components/headers/X-RateLimit-Reset'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EventListResponse'
+        '401':
+          $ref: '#/components/responses/401'
+        '500':
+          $ref: '#/components/responses/500'
+
+    post:
+      tags: [events]
+      operationId: createEvent
+      summary: Create a new event
+      description: |
+        Creates a new event for the authenticated user. A URL-safe slug is
+        auto-generated from the title (with a random suffix to ensure uniqueness).
+      security:
+        - cookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateEventRequest'
+            example:
+              title: Alice's Birthday Party
+              date: '2026-06-15'
+              time: '18:30'
+              description: Come celebrate with us!
+      responses:
+        '201':
+          description: Event created.
+          headers:
+            Location:
+              schema:
+                type: string
+              description: URL of the newly created event (`/api/events/{slug}`).
+            X-RateLimit-Limit:
+              $ref: '#/components/headers/X-RateLimit-Limit'
+            X-RateLimit-Remaining:
+              $ref: '#/components/headers/X-RateLimit-Remaining'
+            X-RateLimit-Reset:
+              $ref: '#/components/headers/X-RateLimit-Reset'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    $ref: '#/components/schemas/EventResponse'
+        '400':
+          $ref: '#/components/responses/400'
+        '401':
+          $ref: '#/components/responses/401'
+        '500':
+          $ref: '#/components/responses/500'
+
+  /events/{slug}:
+    parameters:
+      - $ref: '#/components/parameters/SlugParam'
+
+    get:
+      tags: [events]
+      operationId: getEventBySlug
+      summary: Get event by slug (public)
+      description: Returns a single event by its slug. No authentication required.
+      security: []
+      responses:
+        '200':
+          description: Event detail.
+          headers:
+            X-RateLimit-Limit:
+              $ref: '#/components/headers/X-RateLimit-Limit'
+            X-RateLimit-Remaining:
+              $ref: '#/components/headers/X-RateLimit-Remaining'
+            X-RateLimit-Reset:
+              $ref: '#/components/headers/X-RateLimit-Reset'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    $ref: '#/components/schemas/EventResponse'
+        '404':
+          $ref: '#/components/responses/404'
+        '500':
+          $ref: '#/components/responses/500'
+
+    put:
+      tags: [events]
+      operationId: updateEvent
+      summary: Update an event (creator only)
+      description: Partially updates an event. Only the event creator may update it.
+      security:
+        - cookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateEventRequest'
+            example:
+              title: Alice's Birthday Bash
+              description: Bigger party, new venue!
+      responses:
+        '200':
+          description: Event updated.
+          headers:
+            X-RateLimit-Limit:
+              $ref: '#/components/headers/X-RateLimit-Limit'
+            X-RateLimit-Remaining:
+              $ref: '#/components/headers/X-RateLimit-Remaining'
+            X-RateLimit-Reset:
+              $ref: '#/components/headers/X-RateLimit-Reset'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    $ref: '#/components/schemas/EventResponse'
+        '400':
+          $ref: '#/components/responses/400'
+        '401':
+          $ref: '#/components/responses/401'
+        '403':
+          $ref: '#/components/responses/403'
+        '404':
+          $ref: '#/components/responses/404'
+        '500':
+          $ref: '#/components/responses/500'
+
+    delete:
+      tags: [events]
+      operationId: deleteEvent
+      summary: Delete an event (creator only)
+      description: |
+        Permanently deletes an event and all its RSVPs. Only the creator may
+        delete it.
+      security:
+        - cookieAuth: []
+      responses:
+        '204':
+          description: Event deleted.
+          headers:
+            X-RateLimit-Limit:
+              $ref: '#/components/headers/X-RateLimit-Limit'
+            X-RateLimit-Remaining:
+              $ref: '#/components/headers/X-RateLimit-Remaining'
+            X-RateLimit-Reset:
+              $ref: '#/components/headers/X-RateLimit-Reset'
+        '401':
+          $ref: '#/components/responses/401'
+        '403':
+          $ref: '#/components/responses/403'
+        '404':
+          $ref: '#/components/responses/404'
+        '500':
+          $ref: '#/components/responses/500'
+
+  # ==========================================================================
+  # RSVPs
+  # ==========================================================================
+
+  /events/{slug}/rsvps:
+    parameters:
+      - $ref: '#/components/parameters/SlugParam'
+
+    get:
+      tags: [rsvps]
+      operationId: listRsvps
+      summary: List RSVPs for an event (public)
+      description: Returns a paginated list of all RSVPs for the given event. No auth required.
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/PageParam'
+        - $ref: '#/components/parameters/LimitParam'
+        - name: status
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/RsvpStatus'
+          description: Filter by RSVP status.
+      responses:
+        '200':
+          description: Paginated list of RSVPs.
+          headers:
+            X-RateLimit-Limit:
+              $ref: '#/components/headers/X-RateLimit-Limit'
+            X-RateLimit-Remaining:
+              $ref: '#/components/headers/X-RateLimit-Remaining'
+            X-RateLimit-Reset:
+              $ref: '#/components/headers/X-RateLimit-Reset'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RsvpListResponse'
+        '404':
+          $ref: '#/components/responses/404'
+        '500':
+          $ref: '#/components/responses/500'
+
+    post:
+      tags: [rsvps]
+      operationId: createRsvp
+      summary: Create an RSVP (public)
+      description: |
+        Submits an RSVP for the given event. No authentication required.
+        Rate-limited per IP to prevent spam.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateRsvpRequest'
+            example:
+              name: Bob Jones
+              email: bob@example.com
+              status: yes
+      responses:
+        '201':
+          description: RSVP created.
+          headers:
+            Location:
+              schema:
+                type: string
+              description: URL of the new RSVP (`/api/events/{slug}/rsvps/{id}`).
+            X-RateLimit-Limit:
+              $ref: '#/components/headers/X-RateLimit-Limit'
+            X-RateLimit-Remaining:
+              $ref: '#/components/headers/X-RateLimit-Remaining'
+            X-RateLimit-Reset:
+              $ref: '#/components/headers/X-RateLimit-Reset'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    $ref: '#/components/schemas/RsvpResponse'
+        '400':
+          $ref: '#/components/responses/400'
+        '404':
+          $ref: '#/components/responses/404'
+        '429':
+          description: Too many requests.
+          headers:
+            Retry-After:
+              schema:
+                type: integer
+              description: Seconds to wait before retrying.
+            X-RateLimit-Limit:
+              $ref: '#/components/headers/X-RateLimit-Limit'
+            X-RateLimit-Remaining:
+              $ref: '#/components/headers/X-RateLimit-Remaining'
+            X-RateLimit-Reset:
+              $ref: '#/components/headers/X-RateLimit-Reset'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                error:
+                  code: RATE_LIMITED
+                  message: Too many requests. Please wait before submitting again.
+        '500':
+          $ref: '#/components/responses/500'
+
+  /events/{slug}/rsvps/{id}:
+    parameters:
+      - $ref: '#/components/parameters/SlugParam'
+      - $ref: '#/components/parameters/RsvpIdParam'
+
+    put:
+      tags: [rsvps]
+      operationId: updateRsvp
+      summary: Update an RSVP (public)
+      description: |
+        Updates an existing RSVP. No authentication required — the RSVP id acts
+        as the ownership token. The id is returned only at creation time; clients
+        should persist it (e.g. localStorage) to allow later edits.
+        Rate-limited per IP.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateRsvpRequest'
+            example:
+              status: tentative
+      responses:
+        '200':
+          description: RSVP updated.
+          headers:
+            X-RateLimit-Limit:
+              $ref: '#/components/headers/X-RateLimit-Limit'
+            X-RateLimit-Remaining:
+              $ref: '#/components/headers/X-RateLimit-Remaining'
+            X-RateLimit-Reset:
+              $ref: '#/components/headers/X-RateLimit-Reset'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    $ref: '#/components/schemas/RsvpResponse'
+        '400':
+          $ref: '#/components/responses/400'
+        '404':
+          $ref: '#/components/responses/404'
+        '429':
+          description: Too many requests.
+          headers:
+            Retry-After:
+              schema:
+                type: integer
+            X-RateLimit-Limit:
+              $ref: '#/components/headers/X-RateLimit-Limit'
+            X-RateLimit-Remaining:
+              $ref: '#/components/headers/X-RateLimit-Remaining'
+            X-RateLimit-Reset:
+              $ref: '#/components/headers/X-RateLimit-Reset'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                error:
+                  code: RATE_LIMITED
+                  message: Too many requests. Please wait before retrying.
+        '500':
+          $ref: '#/components/responses/500'
