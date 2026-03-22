@@ -1,0 +1,16 @@
+{
+  "name": "eventping",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "test:integration": "npm run test:integration --workspace=backend",
+    "test:e2e": "playwright test"
+  },
+  "workspaces": [
+    "backend",
+    "frontend"
+  ],
+  "devDependencies": {
+    "@playwright/test": "^1.44.0"
+  }
+}
