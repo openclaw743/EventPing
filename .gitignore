@@ -1,0 +1,46 @@
+# Dependencies
+node_modules/
+.pnp.*
+.yarn/
+
+# Build output
+dist/
+build/
+.next/
+out/
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test & coverage
+coverage/
+.nyc_output/
+test-results/
+playwright-report/
+
+# Terraform
+infra/terraform/.terraform/
+infra/terraform/*.tfstate
+infra/terraform/*.tfstate.*
+infra/terraform/.terraform.lock.hcl
+*.tfvars
+!*.tfvars.example
+
+# Docker
+*.log
+
+# Misc
+*.tgz
+*.gz
