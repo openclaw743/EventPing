@@ -1,0 +1,9 @@
+# Local terraform state and vars (never commit)
+*.tfstate
+*.tfstate.backup
+*.tfvars
+!*.tfvars.example
+.terraform/
+.terraform.lock.hcl
+terraform.tfplan
+crash.log
