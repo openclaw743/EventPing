@@ -17,7 +17,7 @@ const features = [
   {
     icon: '📋',
     title: 'Collect RSVPs',
-    desc: 'See who's coming, who's maybe, and who can't make it — all in one place.',
+    desc: "See who's coming, who's maybe, and who can't make it — all in one place.",
   },
 ]
 
