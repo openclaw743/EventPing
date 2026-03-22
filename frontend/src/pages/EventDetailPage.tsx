@@ -24,11 +24,13 @@ export default function EventDetailPage() {
     enabled: !!slug,
   })
 
-  const { data: rsvps = [], isLoading: loadingRsvps } = useQuery({
+  const { data: rsvpResult, isLoading: loadingRsvps } = useQuery({
     queryKey: ['rsvps', slug],
-    queryFn: () => api.get<RSVP[]>(`/api/events/${slug}/rsvps`),
+    queryFn: () => api.get<{ data: RSVP[]; pagination: unknown }>(`/api/events/${slug}/rsvps`),
     enabled: !!slug,
   })
+
+  const rsvps = rsvpResult?.data ?? []
 
   const refresh = () => qc.invalidateQueries({ queryKey: ['rsvps', slug] })
 
